@@ -9,7 +9,6 @@ class AppRouter {
     final app = Router();
 
     // 1. توليد أكواد تفعيل جديدة (لصالح مدرسة سياقة)
-    // توليد أكواد تفعيل رقمية وفريدة
     app.post('/api/generate', (Request req) async {
       try {
         final bodyJson = await req.readAsString();
@@ -27,7 +26,6 @@ class AppRouter {
         final List<String> generatedCodes = [];
         final List<Map<String, dynamic>> rowsToInsert = [];
 
-        // جلب جميع الأكواد الحالية لتجنب التكرار
         final existingRows = await DatabaseService.client
             .from('activation_codes')
             .select('code');
@@ -38,7 +36,6 @@ class AppRouter {
 
         for (var i = 0; i < count; i++) {
           String newCode;
-          // تكرار المحاولة في حال صادف كوداً مكرراً بالصدفة
           do {
             newCode = CodeGenerator.generate(length: 8);
           } while (existingCodes.contains(newCode) ||
@@ -70,6 +67,7 @@ class AppRouter {
         );
       }
     });
+
     // 2. جلب قائمة الأكواد الخاصة بمدرسة سياقة محددة
     app.get('/api/codes', (Request req) async {
       final schoolId = req.url.queryParameters['school_id'];
@@ -84,7 +82,7 @@ class AppRouter {
 
       var query = DatabaseService.client
           .from('activation_codes')
-          .select('code, status, student_phone, activated_at, created_at')
+          .select('code, status, activated_at, created_at')
           .eq('school_id', schoolId);
 
       if (status != null && status.isNotEmpty) {
@@ -99,54 +97,60 @@ class AppRouter {
       );
     });
 
-    // 3. تفعيل الكود من طرف تطبيق الهواتف (Virage)
+    // 3. تفعيل الكود من اللوحة
     app.post('/api/activate', (Request req) async {
-      final body = jsonDecode(await req.readAsString());
-      final String? code = body['code'];
-      final String? studentPhone = body['student_phone'];
+      try {
+        final bodyJson = await req.readAsString();
+        final body = jsonDecode(bodyJson);
+        final String? code = body['code'];
 
-      if (code == null || studentPhone == null) {
-        return Response.badRequest(
-          body: jsonEncode({'error': 'الكود ورقم الهاتف مطلوبان'}),
+        if (code == null) {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'الكود مطلوب'}),
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        // البحث عن حالة الكود
+        final check = await DatabaseService.client
+            .from('activation_codes')
+            .select('status')
+            .eq('code', code)
+            .maybeSingle();
+
+        if (check == null) {
+          return Response.notFound(
+            jsonEncode({'error': 'رمز التفعيل غير صحيح'}),
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        if (check['status'] == 'activated') {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'تم استخدام هذا الرمز من قبل'}),
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        // تحديث حالة الكود إلى activated
+        await DatabaseService.client
+            .from('activation_codes')
+            .update({
+              'status': 'activated',
+              'activated_at': DateTime.now().toIso8601String(),
+            })
+            .eq('code', code);
+
+        return Response.ok(
+          jsonEncode({'message': 'تم تفعيل الكود بنجاح'}),
+          headers: {'content-type': 'application/json'},
+        );
+      } catch (e) {
+        return Response.internalServerError(
+          body: jsonEncode({'error_details': e.toString()}),
           headers: {'content-type': 'application/json'},
         );
       }
-
-      // البحث عن حالة الكود
-      final check = await DatabaseService.client
-          .from('activation_codes')
-          .select('status')
-          .eq('code', code)
-          .maybeSingle();
-
-      if (check == null) {
-        return Response.notFound(
-          jsonEncode({'error': 'رمز التفعيل غير صحيح'}),
-          headers: {'content-type': 'application/json'},
-        );
-      }
-
-      if (check['status'] == 'active') {
-        return Response.badRequest(
-          body: jsonEncode({'error': 'تم استخدام هذا الرمز من قبل'}),
-          headers: {'content-type': 'application/json'},
-        );
-      }
-
-      // تحديث حالة الكود
-      await DatabaseService.client
-          .from('activation_codes')
-          .update({
-            'status': 'active',
-            'student_phone': studentPhone,
-            'activated_at': DateTime.now().toIso8601String(),
-          })
-          .eq('code', code);
-
-      return Response.ok(
-        jsonEncode({'message': 'تم تفعيل الحساب بنجاح'}),
-        headers: {'content-type': 'application/json'},
-      );
     });
 
     return app;
