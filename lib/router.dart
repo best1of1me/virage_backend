@@ -7,7 +7,16 @@ import 'db.dart';
 class AppRouter {
   Router get router {
     final app = Router();
-
+    // مسار الصفحة الرئيسية لفحص عمل الخادم (Health Check)
+    app.get('/', (Request req) {
+      return Response.ok(
+        jsonEncode({
+          'status': 'online',
+          'message': 'Virage Backend is running',
+        }),
+        headers: {'content-type': 'application/json'},
+      );
+    });
     // 1. توليد أكواد تفعيل جديدة (لصالح مدرسة سياقة)
     app.post('/api/generate', (Request req) async {
       try {
