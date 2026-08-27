@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:http/http.dart' as http;
@@ -6,12 +7,13 @@ import 'code_generator.dart';
 import 'db.dart';
 
 class AppRouter {
-  static const String _chargilySecretKey = 'YOUR_CHARGILY_SECRET_KEY';
+  static const String _chargilySecretKey =
+      'test_sk_6mJk8N1EpuR1FCTdFWf5NocUq4jsrCjFxdD5HeZw';
 
   Router get router {
     final app = Router();
 
-    // مسار الصفحة الرئيسية لفحص عمل الخادم (Health Check)
+    // Health Check
     app.get('/', (Request req) {
       return Response.ok(
         jsonEncode({
@@ -22,7 +24,7 @@ class AppRouter {
       );
     });
 
-    // 1. إنشاء رابط دفع عن طريق Chargily Pay v2
+    // 1. إنشاء رابط دفع
     app.post('/api/create-checkout', (Request req) async {
       try {
         final bodyJson = await req.readAsString();
@@ -63,7 +65,10 @@ class AppRouter {
         }
 
         return Response.internalServerError(
-          body: jsonEncode({'error': 'فشل إنشاء عملية الدفع'}),
+          body: jsonEncode({
+            'error': 'فشل إنشاء عملية الدفع',
+            'details': jsonDecode(chargilyResponse.body),
+          }),
           headers: {'content-type': 'application/json'},
         );
       } catch (e) {
@@ -74,11 +79,21 @@ class AppRouter {
       }
     });
 
-    // 2. استقبال إشعارات الدفع (Webhook) وتوليد الأكواد تلقائيًا
+    // 2. استقبال إشعارات الدفع (Webhook) بعد التحقق من التوقيع
     app.post('/api/webhook/chargily', (Request req) async {
       try {
-        final bodyJson = await req.readAsString();
-        final event = jsonDecode(bodyJson);
+        final rawBody = await req.readAsString();
+        final signature = req.headers['signature'];
+
+        // التحقق من وجود التوقيع وصحته
+        if (signature == null || !_verifySignature(rawBody, signature)) {
+          return Response.forbidden(
+            jsonEncode({'error': 'توقيع الطلب غير صالح'}),
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        final event = jsonDecode(rawBody);
 
         if (event['type'] == 'checkout.paid') {
           final checkout = event['data'];
@@ -86,27 +101,10 @@ class AppRouter {
           final String schoolId = metadata['school_id'];
           final int count = metadata['count'] ?? 10;
 
-          final existingRows = await DatabaseService.client
-              .from('activation_codes')
-              .select('code');
-
-          final Set<String> existingCodes = (existingRows as List)
-              .map((e) => e['code'].toString())
-              .toSet();
-
-          final List<String> generatedCodes = [];
           final List<Map<String, dynamic>> rowsToInsert = [];
-
           for (var i = 0; i < count; i++) {
-            String newCode;
-            do {
-              newCode = CodeGenerator.generate(length: 8);
-            } while (existingCodes.contains(newCode) ||
-                generatedCodes.contains(newCode));
-
-            generatedCodes.add(newCode);
             rowsToInsert.add({
-              'code': newCode,
+              'code': CodeGenerator.generate(length: 8),
               'school_id': schoolId,
               'status': 'unused',
             });
@@ -129,7 +127,7 @@ class AppRouter {
       }
     });
 
-    // 3. توليد أكواد تفعيل جديدة يدويًا (لصالح مدرسة سياقة)
+    // 3. توليد أكواد تفعيل يدويًا
     app.post('/api/generate', (Request req) async {
       try {
         final bodyJson = await req.readAsString();
@@ -147,24 +145,11 @@ class AppRouter {
         final List<String> generatedCodes = [];
         final List<Map<String, dynamic>> rowsToInsert = [];
 
-        final existingRows = await DatabaseService.client
-            .from('activation_codes')
-            .select('code');
-
-        final Set<String> existingCodes = (existingRows as List)
-            .map((e) => e['code'].toString())
-            .toSet();
-
         for (var i = 0; i < count; i++) {
-          String newCode;
-          do {
-            newCode = CodeGenerator.generate(length: 8);
-          } while (existingCodes.contains(newCode) ||
-              generatedCodes.contains(newCode));
-
-          generatedCodes.add(newCode);
+          final code = CodeGenerator.generate(length: 8);
+          generatedCodes.add(code);
           rowsToInsert.add({
-            'code': newCode,
+            'code': code,
             'school_id': schoolId,
             'status': 'unused',
           });
@@ -189,7 +174,7 @@ class AppRouter {
       }
     });
 
-    // 4. جلب قائمة الأكواد الخاصة بمدرسة سياقة محددة
+    // 4. جلب قائمة الأكواد
     app.get('/api/codes', (Request req) async {
       final schoolId = req.url.queryParameters['school_id'];
       final status = req.url.queryParameters['status'];
@@ -218,7 +203,7 @@ class AppRouter {
       );
     });
 
-    // 5. تفعيل الكود من اللوحة
+    // 5. تفعيل الكود
     app.post('/api/activate', (Request req) async {
       try {
         final bodyJson = await req.readAsString();
@@ -273,5 +258,12 @@ class AppRouter {
     });
 
     return app;
+  }
+
+  // دالة مطابقة توقيع Chargily Pay
+  bool _verifySignature(String payload, String signature) {
+    final hmac = Hmac(sha256, utf8.encode(_chargilySecretKey));
+    final digest = hmac.convert(utf8.encode(payload));
+    return digest.toString() == signature;
   }
 }
