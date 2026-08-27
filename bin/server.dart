@@ -21,27 +21,27 @@ void main() async {
 }
 
 Middleware _corsMiddleware() {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers':
+        'Origin, Content-Type, Authorization, Accept, X-Requested-With',
+  };
+
   return (Handler innerHandler) {
     return (Request request) async {
+      // معالجة طلب Preflight المسبق فورًا
       if (request.method == 'OPTIONS') {
-        return Response.ok(
-          '',
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers':
-                'Origin, Content-Type, Authorization',
-          },
-        );
+        return Response.ok('', headers: corsHeaders);
       }
+
       final response = await innerHandler(request);
-      return response.change(
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Origin, Content-Type, Authorization',
-        },
-      );
+
+      // دمج الترويسات لضمان عدم ضياع الترويسات الأصلية للطلب
+      final updatedHeaders = Map<String, String>.from(response.headers)
+        ..addAll(corsHeaders);
+
+      return response.change(headers: updatedHeaders);
     };
   };
 }
