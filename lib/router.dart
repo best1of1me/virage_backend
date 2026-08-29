@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io'; // ⚠️ تم إضافة مكتبة io
 import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
@@ -7,7 +8,9 @@ import 'code_generator.dart';
 import 'db.dart';
 
 class AppRouter {
-  static const String _chargilySecretKey =
+  // ⚠️ قراءة المفتاح من متغيّرات البيئة في Render أو استخدام المفتاح الافتراضي
+  static String get _chargilySecretKey =>
+      Platform.environment['CHARGILY_SECRET_KEY'] ??
       'test_sk_6mJk8N1EpuR1FCTdFWf5NocUq4jsrCjFxdD5HeZw';
 
   Router get router {
@@ -85,7 +88,6 @@ class AppRouter {
         final rawBody = await req.readAsString();
         final signature = req.headers['signature'];
 
-        // التحقق من وجود التوقيع وصحته
         if (signature == null || !_verifySignature(rawBody, signature)) {
           return Response.forbidden(
             jsonEncode({'error': 'توقيع الطلب غير صالح'}),
@@ -260,7 +262,6 @@ class AppRouter {
     return app;
   }
 
-  // دالة مطابقة توقيع Chargily Pay
   bool _verifySignature(String payload, String signature) {
     final hmac = Hmac(sha256, utf8.encode(_chargilySecretKey));
     final digest = hmac.convert(utf8.encode(payload));
