@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io'; // ⚠️ تم إضافة مكتبة io
+import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
@@ -8,7 +8,6 @@ import 'code_generator.dart';
 import 'db.dart';
 
 class AppRouter {
-  // ⚠️ قراءة المفتاح من متغيّرات البيئة في Render أو استخدام المفتاح الافتراضي
   static String get _chargilySecretKey =>
       Platform.environment['CHARGILY_SECRET_KEY'] ??
       'test_sk_6mJk8N1EpuR1FCTdFWf5NocUq4jsrCjFxdD5HeZw';
@@ -86,9 +85,15 @@ class AppRouter {
     app.post('/api/webhook/chargily', (Request req) async {
       try {
         final rawBody = await req.readAsString();
-        final signature = req.headers['signature'];
+
+        // إصلاح: قراءة التوقيع من الهيدر الصحيح لـ Chargily v2
+        final signature =
+            req.headers['x-chargily-signature'] ?? req.headers['signature'];
+
+        print('Webhook Received. Signature Header: $signature');
 
         if (signature == null || !_verifySignature(rawBody, signature)) {
+          print('Webhook Error: Signature verification failed!');
           return Response.forbidden(
             jsonEncode({'error': 'توقيع الطلب غير صالح'}),
             headers: {'content-type': 'application/json'},
@@ -96,12 +101,25 @@ class AppRouter {
         }
 
         final event = jsonDecode(rawBody);
+        print('Webhook Event Type: ${event['type']}');
 
         if (event['type'] == 'checkout.paid') {
-          final checkout = event['data'];
-          final metadata = checkout['metadata'];
-          final String schoolId = metadata['school_id'];
-          final int count = metadata['count'] ?? 10;
+          final checkout = event['data'] ?? {};
+          final metadata = checkout['metadata'] ?? {};
+
+          final String? schoolId = metadata['school_id']?.toString();
+          final int count =
+              int.tryParse(metadata['count']?.toString() ?? '10') ?? 10;
+
+          if (schoolId == null || schoolId.isEmpty) {
+            print('Webhook Error: school_id is missing in metadata');
+            return Response.badRequest(
+              body: jsonEncode({
+                'error': 'school_id مفقود في البيانات الإضافية',
+              }),
+              headers: {'content-type': 'application/json'},
+            );
+          }
 
           final List<Map<String, dynamic>> rowsToInsert = [];
           for (var i = 0; i < count; i++) {
@@ -112,16 +130,23 @@ class AppRouter {
             });
           }
 
+          print(
+            'Inserting $count codes into database for school: $schoolId...',
+          );
           await DatabaseService.client
               .from('activation_codes')
               .insert(rowsToInsert);
+
+          print('Activation codes created successfully.');
         }
 
         return Response.ok(
           jsonEncode({'status': 'success'}),
           headers: {'content-type': 'application/json'},
         );
-      } catch (e) {
+      } catch (e, stackTrace) {
+        print('Webhook Processing Exception: $e');
+        print(stackTrace);
         return Response.internalServerError(
           body: jsonEncode({'error_details': e.toString()}),
           headers: {'content-type': 'application/json'},
