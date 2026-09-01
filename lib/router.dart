@@ -1,9 +1,10 @@
-import 'dart:convert';
+import 'dart0:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:http/http.dart' as http;
+import 'package:supabase/supabase.dart';
 import 'code_generator.dart';
 import 'db.dart';
 
@@ -35,7 +36,7 @@ class AppRouter {
         final int count = body['count'] ?? 10;
         final num amount = body['amount'] ?? 2000;
 
-        if (schoolId == null) {
+        if (schoolId == null || schoolId.isEmpty) {
           return Response.badRequest(
             body: jsonEncode({'error': 'school_id مطلوب'}),
             headers: {'content-type': 'application/json'},
@@ -81,12 +82,10 @@ class AppRouter {
       }
     });
 
-    // 2. استقبال إشعارات الدفع (Webhook) بعد التحقق من التوقيع
+    // 2. استقبال إشعارات الدفع (Webhook)
     app.post('/api/webhook/chargily', (Request req) async {
       try {
         final rawBody = await req.readAsString();
-
-        // إصلاح: قراءة التوقيع من الهيدر الصحيح لـ Chargily v2
         final signature =
             req.headers['x-chargily-signature'] ?? req.headers['signature'];
 
@@ -133,6 +132,7 @@ class AppRouter {
           print(
             'Inserting $count codes into database for school: $schoolId...',
           );
+
           await DatabaseService.client
               .from('activation_codes')
               .insert(rowsToInsert);
@@ -144,8 +144,22 @@ class AppRouter {
           jsonEncode({'status': 'success'}),
           headers: {'content-type': 'application/json'},
         );
+      } on PostgrestException catch (pgError) {
+        print('Supabase Postgrest Error during Webhook:');
+        print('Message: ${pgError.message}');
+        print('Details: ${pgError.details}');
+        print('Hint: ${pgError.hint}');
+        print('Code: ${pgError.code}');
+        return Response.internalServerError(
+          body: jsonEncode({
+            'error': 'فشل الحفظ في قاعدة البيانات',
+            'details': pgError.message,
+            'code': pgError.code,
+          }),
+          headers: {'content-type': 'application/json'},
+        );
       } catch (e, stackTrace) {
-        print('Webhook Processing Exception: $e');
+        print('Webhook General Exception: $e');
         print(stackTrace);
         return Response.internalServerError(
           body: jsonEncode({'error_details': e.toString()}),
@@ -162,7 +176,7 @@ class AppRouter {
         final String? schoolId = body['school_id'];
         final int count = body['count'] ?? 1;
 
-        if (schoolId == null) {
+        if (schoolId == null || schoolId.isEmpty) {
           return Response.badRequest(
             body: jsonEncode({'error': 'school_id مطلوب'}),
             headers: {'content-type': 'application/json'},
@@ -193,6 +207,14 @@ class AppRouter {
           }),
           headers: {'content-type': 'application/json'},
         );
+      } on PostgrestException catch (pgError) {
+        return Response.internalServerError(
+          body: jsonEncode({
+            'error': 'فشل إدخال الأكواد في قاعدة البيانات',
+            'details': pgError.message,
+          }),
+          headers: {'content-type': 'application/json'},
+        );
       } catch (e) {
         return Response.internalServerError(
           body: jsonEncode({'error_details': e.toString()}),
@@ -203,31 +225,43 @@ class AppRouter {
 
     // 4. جلب قائمة الأكواد
     app.get('/api/codes', (Request req) async {
-      final schoolId = req.url.queryParameters['school_id'];
-      final status = req.url.queryParameters['status'];
+      try {
+        final schoolId = req.url.queryParameters['school_id'];
+        final status = req.url.queryParameters['status'];
 
-      if (schoolId == null) {
-        return Response.badRequest(
-          body: jsonEncode({'error': 'school_id مطلوب'}),
+        if (schoolId == null || schoolId.isEmpty) {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'school_id مطلوب'}),
+            headers: {'content-type': 'application/json'},
+          );
+        }
+
+        var query = DatabaseService.client
+            .from('activation_codes')
+            .select('code, status, activated_at, created_at')
+            .eq('school_id', schoolId);
+
+        if (status != null && status.isNotEmpty) {
+          query = query.eq('status', status);
+        }
+
+        final response = await query.order('created_at', ascending: false);
+
+        return Response.ok(
+          jsonEncode(response),
+          headers: {'content-type': 'application/json'},
+        );
+      } on PostgrestException catch (pgError) {
+        return Response.internalServerError(
+          body: jsonEncode({'error_details': pgError.message}),
+          headers: {'content-type': 'application/json'},
+        );
+      } catch (e) {
+        return Response.internalServerError(
+          body: jsonEncode({'error_details': e.toString()}),
           headers: {'content-type': 'application/json'},
         );
       }
-
-      var query = DatabaseService.client
-          .from('activation_codes')
-          .select('code, status, activated_at, created_at')
-          .eq('school_id', schoolId);
-
-      if (status != null && status.isNotEmpty) {
-        query = query.eq('status', status);
-      }
-
-      final response = await query.order('created_at', ascending: false);
-
-      return Response.ok(
-        jsonEncode(response),
-        headers: {'content-type': 'application/json'},
-      );
     });
 
     // 5. تفعيل الكود
@@ -237,7 +271,7 @@ class AppRouter {
         final body = jsonDecode(bodyJson);
         final String? code = body['code'];
 
-        if (code == null) {
+        if (code == null || code.isEmpty) {
           return Response.badRequest(
             body: jsonEncode({'error': 'الكود مطلوب'}),
             headers: {'content-type': 'application/json'},
@@ -274,6 +308,11 @@ class AppRouter {
 
         return Response.ok(
           jsonEncode({'message': 'تم تفعيل الكود بنجاح'}),
+          headers: {'content-type': 'application/json'},
+        );
+      } on PostgrestException catch (pgError) {
+        return Response.internalServerError(
+          body: jsonEncode({'error_details': pgError.message}),
           headers: {'content-type': 'application/json'},
         );
       } catch (e) {
