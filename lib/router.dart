@@ -1,5 +1,4 @@
-import 'dart:convert';
-
+import 'dart:convert' show jsonDecode, jsonEncode, utf8;
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
@@ -28,20 +27,33 @@ class AppRouter {
       );
     });
 
-    // 1. إنشاء رابط دفع
+    // 1. إنشاء رابط دفع (مع دعم خصم الإحالة 10% لأول عملية شراء)
     app.post('/api/create-checkout', (Request req) async {
       try {
         final bodyJson = await req.readAsString();
         final body = jsonDecode(bodyJson);
         final String? schoolId = body['school_id'];
         final int count = body['count'] ?? 10;
-        final num amount = body['amount'] ?? 2000;
+        final num baseAmount = body['amount'] ?? 2000;
 
         if (schoolId == null || schoolId.isEmpty) {
           return Response.badRequest(
             body: jsonEncode({'error': 'school_id مطلوب'}),
             headers: {'content-type': 'application/json'},
           );
+        }
+
+        num finalAmount = baseAmount;
+
+        // التحقق مما إذا كانت المدرسة مسجلة عبر إحالة ولم تستفد من الخصم من قبل
+        final referralCheck = await DatabaseService.client
+            .from('referrals')
+            .select('id, reward_granted')
+            .eq('referee_id', schoolId)
+            .maybeSingle();
+
+        if (referralCheck != null && referralCheck['reward_granted'] == false) {
+          finalAmount = baseAmount * 0.9; // خصم 10% على أول عملية شراء
         }
 
         final chargilyResponse = await http.post(
@@ -51,7 +63,7 @@ class AppRouter {
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
-            'amount': amount,
+            'amount': finalAmount,
             'currency': 'dzd',
             'success_url': 'https://virage.app/success',
             'failure_url': 'https://virage.app/failure',
@@ -83,7 +95,7 @@ class AppRouter {
       }
     });
 
-    // 2. استقبال إشعارات الدفع (Webhook)
+    // 2. استقبال إشعارات الدفع (Webhook مع منح مكافأة الإحالة)
     app.post('/api/webhook/chargily', (Request req) async {
       try {
         final rawBody = await req.readAsString();
@@ -121,6 +133,7 @@ class AppRouter {
             );
           }
 
+          // 1. توليد وإدراج أكواد التفعيل للمدرسة التي قامت بالشراء
           final List<Map<String, dynamic>> rowsToInsert = [];
           for (var i = 0; i < count; i++) {
             rowsToInsert.add({
@@ -133,12 +146,46 @@ class AppRouter {
           print(
             'Inserting $count codes into database for school: $schoolId...',
           );
-
           await DatabaseService.client
               .from('activation_codes')
               .insert(rowsToInsert);
-
           print('Activation codes created successfully.');
+
+          // 2. معالجة مكافأة الإحالة (منح 10 أكواد للمُحيل لمرة واحدة)
+          final checkReferral = await DatabaseService.client
+              .from('referrals')
+              .select('id, referrer_id, reward_granted')
+              .eq('referee_id', schoolId)
+              .maybeSingle();
+
+          if (checkReferral != null &&
+              checkReferral['reward_granted'] == false) {
+            final String referrerId = checkReferral['referrer_id'];
+
+            final List<Map<String, dynamic>> bonusCodes = [];
+            for (var i = 0; i < 10; i++) {
+              bonusCodes.add({
+                'code': CodeGenerator.generate(length: 8),
+                'school_id': referrerId,
+                'status': 'unused',
+              });
+            }
+
+            // إدراج 10 أكواد هدية للمدرسة المُحيلة
+            await DatabaseService.client
+                .from('activation_codes')
+                .insert(bonusCodes);
+
+            // تحديث حالة المكافأة لتصبح ممنوحة حتى لا تكرر
+            await DatabaseService.client
+                .from('referrals')
+                .update({'reward_granted': true})
+                .eq('id', checkReferral['id']);
+
+            print(
+              'Referral reward granted successfully to referrer: $referrerId',
+            );
+          }
         }
 
         return Response.ok(
