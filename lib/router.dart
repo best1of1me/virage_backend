@@ -163,7 +163,7 @@ class AppRouter {
             final String referrerId = checkReferral['referrer_id'];
 
             final List<Map<String, dynamic>> bonusCodes = [];
-            for (var i = 0; i < 10; i++) {
+            for (var i = 0; i < 5; i++) {
               bonusCodes.add({
                 'code': CodeGenerator.generate(length: 8),
                 'school_id': referrerId,
