@@ -24,6 +24,9 @@ class AppRouter {
 
   static String get _apkSha256 => Platform.environment['APK_SHA256'] ?? '';
 
+  static String get _apkUrl => Platform.environment['APK_URL'] ??
+      'https://github.com/best1of1me/virage_backend/releases/download/v$_apkVersionName/app-release.apk';
+
   static String get _apkDir => Platform.environment['APK_DIR'] ?? 'apk';
 
   Router get router {
@@ -390,7 +393,7 @@ class AppRouter {
         jsonEncode({
           'versionCode': int.tryParse(_apkVersionCode) ?? 1,
           'versionName': _apkVersionName,
-          'url': '$_siteUrl/apk/virage-$_apkVersionName.apk',
+          'url': _apkUrl,
           'sha256': _apkSha256,
           'changelogAr': 'الإصدار الأول من تطبيق Virage',
         }),
