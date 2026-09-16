@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: virage-backend
+    runtime: docker
+    dockerfilePath: Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: SITE_URL
+        sync: false
+      - key: CHARGILY_SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: PORT
+        value: "8080"

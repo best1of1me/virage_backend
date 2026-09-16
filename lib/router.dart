@@ -13,6 +13,19 @@ class AppRouter {
       Platform.environment['CHARGILY_SECRET_KEY'] ??
       'test_sk_6mJk8N1EpuR1FCTdFWf5NocUq4jsrCjFxdD5HeZw';
 
+  static String get _siteUrl =>
+      Platform.environment['SITE_URL'] ?? 'https://example.com';
+
+  static String get _apkVersionCode =>
+      Platform.environment['APK_VERSION_CODE'] ?? '1';
+
+  static String get _apkVersionName =>
+      Platform.environment['APK_VERSION_NAME'] ?? '1.0.0';
+
+  static String get _apkSha256 => Platform.environment['APK_SHA256'] ?? '';
+
+  static String get _apkDir => Platform.environment['APK_DIR'] ?? 'apk';
+
   Router get router {
     final app = Router();
 
@@ -65,8 +78,8 @@ class AppRouter {
           body: jsonEncode({
             'amount': finalAmount,
             'currency': 'dzd',
-            'success_url': 'https://virage.app/success',
-            'failure_url': 'https://virage.app/failure',
+            'success_url': '$_siteUrl/success',
+            'failure_url': '$_siteUrl/failure',
             'metadata': {'school_id': schoolId, 'count': count},
           }),
         );
@@ -371,7 +384,92 @@ class AppRouter {
       }
     });
 
+    // 6. فحص آخر إصدار للتطبيق (يستخدمه التطبيق وموقع الويب)
+    app.get('/api/latest', (Request req) {
+      return Response.ok(
+        jsonEncode({
+          'versionCode': int.tryParse(_apkVersionCode) ?? 1,
+          'versionName': _apkVersionName,
+          'url': '$_siteUrl/apk/virage-$_apkVersionName.apk',
+          'sha256': _apkSha256,
+          'changelogAr': 'الإصدار الأول من تطبيق Virage',
+        }),
+        headers: {
+          'content-type': 'application/json',
+          'cache-control': 'no-cache',
+        },
+      );
+    });
+
+    // 7. صفحات نتيجة الدفع (تخدمها الخلفية نفسها — لا حاجة لنطاق منفصل)
+    app.get('/success', (Request req) {
+      return _paymentPage(
+        'تم الدفع بنجاح',
+        'تم تسجيل عملية الشراء، ستصل الرموز إلى المدرسة خلال دقائق.',
+        true,
+      );
+    });
+
+    app.get('/failure', (Request req) {
+      return _paymentPage(
+        'تعذر إتمام الدفع',
+        'لم تُؤكَّد العملية. يمكنك إعادة المحاولة في أي وقت.',
+        false,
+      );
+    });
+
+    // 8. تقديم ملف التحميل (APK) من مجلد apk/ على الخادم
+    app.get('/apk/virage-<version>.apk', (Request req, String version) async {
+      final file = File('$_apkDir${Platform.pathSeparator}virage-$version.apk');
+      if (!await file.exists()) {
+        return Response.notFound(
+          jsonEncode({'error': 'ملف الإصدار $version غير متوفر بعد'}),
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      final bytes = await file.readAsBytes();
+      return Response.ok(
+        bytes,
+        headers: {
+          'content-type': 'application/vnd.android.package-archive',
+          'content-length': bytes.length.toString(),
+          'cache-control': 'public, max-age=3600',
+        },
+      );
+    });
+
     return app;
+  }
+
+  Response _paymentPage(String title, String message, bool success) {
+    final body =
+        '''
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title</title>
+<style>
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f4f6fb; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  .card { background: #fff; border-radius: 16px; padding: 40px; max-width: 420px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,0.08); }
+  .icon { font-size: 56px; }
+  h1 { color: #1f2937; margin: 16px 0 8px; font-size: 22px; }
+  p { color: #6b7280; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">${success ? '✅' : '⚠️'}</div>
+  <h1>$title</h1>
+  <p>$message</p>
+</div>
+</body>
+</html>''';
+    return Response.ok(
+      body,
+      headers: {'content-type': 'text/html; charset=utf-8'},
+    );
   }
 
   bool _verifySignature(String payload, String signature) {
